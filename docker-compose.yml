@@ -1,0 +1,44 @@
+version: '3.8'
+
+services:
+  service-a:
+    build: ./services/service-a
+    environment:
+      SPRING_APPLICATION_NAME: service-a
+    ports:
+      - "8080:8080"
+    networks:
+      - failure-lab-net
+
+  service-b:
+    build: ./services/service-b
+    environment:
+      SPRING_APPLICATION_NAME: service-b
+    ports:
+      - "8081:8081"
+    networks:
+      - failure-lab-net
+
+  prometheus:
+    image: prom/prometheus
+    volumes:
+      - ./observability/prometheus.yml:/etc/prometheus/prometheus.yml
+    ports:
+      - "9090:9090"
+    networks:
+      - failure-lab-net
+
+  grafana:
+    image: grafana/grafana
+    volumes:
+      - ./observability/grafana-datasources.yml:/etc/grafana/provisioning/datasources/datasources.yml
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus
+    networks:
+      - failure-lab-net
+
+networks:
+  failure-lab-net:
+    driver: bridge
