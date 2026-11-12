@@ -2,13 +2,7 @@ global:
   scrape_interval: 5s
 
 scrape_configs:
-  - job_name: 'services'
-    metrics_path: '/actuator/prometheus'
+  - job_name: services
+    metrics_path: /actuator/prometheus
     static_configs:
       - targets: ['service-a:8080', 'service-b:8081']
-        labels:
-          group: 'microservices'
-
-  - job_name: 'prometheus'
-    static_configs:
-      - targets: ['localhost:9090']

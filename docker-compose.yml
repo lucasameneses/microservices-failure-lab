@@ -1,67 +1,101 @@
-version: '3.8'
+name: failure-lab
+
+x-service-env: &service-env
+  OTLP_ENDPOINT: http://otel-collector:4318
 
 services:
   service-a:
     build: ./services/service-a
     environment:
-      SPRING_APPLICATION_NAME: service-a
-      OTEL_EXPORTER_JAEGER_ENDPOINT: http://jaeger:14250
-      # OTLP alternativo:
-#       OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4317
+      <<: *service-env
+      LAB_DOWNSTREAM_URL: http://service-b:8081
+      JAVA_OPTS: -Xmx256m
     ports:
       - "8080:8080"
-    networks:
-      - failure-lab-net
+    cpus: 1.0
+    mem_limit: 512m
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/actuator/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 24
     depends_on:
-      jaeger:
+      otel-collector:
         condition: service_started
 
   service-b:
     build: ./services/service-b
     environment:
-      SPRING_APPLICATION_NAME: service-b
-      OTEL_EXPORTER_JAEGER_ENDPOINT: http://jaeger:14250
+      <<: *service-env
+      LAB_DOWNSTREAM_URL: http://service-a:8080
+      JAVA_OPTS: -Xmx256m
     ports:
       - "8081:8081"
-    networks:
-      - failure-lab-net
+    cpus: 1.0
+    mem_limit: 512m
+    cap_add:
+      - NET_ADMIN
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8081/actuator/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 24
     depends_on:
-      jaeger:
+      otel-collector:
         condition: service_started
 
-  prometheus:
-    image: prom/prometheus
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.128.0
+    command: ["--config=/etc/otelcol/config.yml"]
     volumes:
-      - ./observability/prometheus.yml:/etc/prometheus/prometheus.yml
-    ports:
-      - "9090:9090"
-    networks:
-      - failure-lab-net
-
-  grafana:
-    image: grafana/grafana
-    volumes:
-      - ./observability/grafana-datasources.yml:/etc/grafana/provisioning/datasources/datasources.yml
-    ports:
-      - "3000:3000"
-    networks:
-      - failure-lab-net
+      - ./observability/otel-collector.yml:/etc/otelcol/config.yml:ro
     depends_on:
-      - prometheus
+      - jaeger
+      - loki
 
   jaeger:
-    image: jaegertracing/all-in-one:latest
-    environment:
-      COLLECTOR_OTLP_ENABLED: "true"
+    image: jaegertracing/jaeger:2.7.0
     ports:
-      - "16686:16686"   # UI
-      - "14250:14250"   # Jaeger gRPC
-      - "14268:14268"   # Jaeger HTTP
-      - "4317:4317"     # OTLP gRPC
-      - "4318:4318"     # OTLP HTTP
-    networks:
-      - failure-lab-net
+      - "16686:16686"
 
-networks:
-  failure-lab-net:
-    driver: bridge
+  loki:
+    image: grafana/loki:3.5.1
+    command: ["-config.file=/etc/loki/local-config.yaml"]
+    ports:
+      - "3100:3100"
+
+  prometheus:
+    image: prom/prometheus:v3.4.2
+    volumes:
+      - ./observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9090:9090"
+
+  grafana:
+    image: grafana/grafana:12.0.2
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/failure-lab.json
+    volumes:
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus
+      - loki
+      - jaeger
+
+  k6:
+    image: grafana/k6:1.1.0
+    profiles: ["load"]
+    command: ["run", "--quiet", "/scripts/k6-flow.js"]
+    volumes:
+      - ./load:/scripts:ro
+    depends_on:
+      service-a:
+        condition: service_healthy
+      service-b:
+        condition: service_healthy
